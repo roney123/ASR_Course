@@ -1,24 +1,33 @@
-import librosa
+from pydub import AudioSegment
 import numpy as np
 from scipy.fftpack import dct
+import python_speech_features
+# python_speech_features.fbank()
 
 # If you want to see the spectrogram picture
-# import matplotlib
-# matplotlib.use('Agg')
-# import matplotlib.pyplot as plt
-# def plot_spectrogram(spec, note,file_name):
-#     """Draw the spectrogram picture
-#         :param spec: a feature_dim by num_frames array(real)
-#         :param note: title of the picture
-#         :param file_name: name of the file
-#     """ 
-#     fig = plt.figure(figsize=(20, 5))
-#     heatmap = plt.pcolor(spec)
-#     fig.colorbar(mappable=heatmap)
-#     plt.xlabel('Time(s)')
-#     plt.ylabel(note)
-#     plt.tight_layout()
-#     plt.savefig(file_name)
+import matplotlib
+# matplotlib.use('Agg') 不显示
+import matplotlib.pyplot as plt
+
+def plot_spectrogram(spec, note,file_name):
+    """Draw the spectrogram picture
+        :param spec: a feature_dim by num_frames array(real)
+        :param note: title of the picture
+        :param file_name: name of the file
+    """
+    fig = plt.figure(figsize=(20, 5))
+    heatmap = plt.pcolor(spec)
+    fig.colorbar(mappable=heatmap)
+    plt.xlabel('Time(s)')
+    plt.ylabel(note)
+    plt.tight_layout()
+    plt.show()
+    plt.savefig(file_name)
+
+
+def plot_show(arr):
+    plt.plot([n for n in range(arr.size)], arr)
+    plt.show()
 
 
 #preemphasis config 
@@ -33,8 +42,7 @@ fft_len = 512
 num_filter = 23
 num_mfcc = 12
 
-# Read wav file
-wav, fs = librosa.load('./test.wav', sr=None)
+fs = 16000
 
 # Enframe with Hamming window function
 def preemphasis(signal, coeff=alpha):
@@ -70,7 +78,7 @@ def get_spectrum(frames, fft_len=fft_len):
         :returns: spectrum, a num_frames by fft_len/2+1 array (real)
     """
     cFFT = np.fft.fft(frames, n=fft_len)
-    valid_len = int(fft_len / 2 ) + 1
+    valid_len = int(fft_len / 2) + 1
     spectrum = np.abs(cFFT[:,0:valid_len])
     return spectrum
 
@@ -81,11 +89,41 @@ def fbank(spectrum, num_filter = num_filter):
         :returns: fbank feature, a num_frames by num_filter array 
         DON'T FORGET LOG OPRETION AFTER MEL FILTER!
     """
+    mel = np.zeros([num_filter, spectrum.shape[1]])
+    # 确定mel频率
+    """
+    获得filterbanks需要选择一个lower频率和upper频率，用300作为lower，8000
+    作为upper是不错的选择。如果采样率是8000Hz那么upper频率应该限制为4000
+    mel(f) = 2595*log10(1+f/700) 或者 mel(f) = 1125*ln(1+f/700)
+    """
+    lower = 2595*np.log10(1+(300/700))
+    upper_hz = 8000 if fs > 16000 else fs/2
+    upper = 2595*np.log10(1+(upper_hz/700))
+    mel_fs = np.linspace(lower, upper, num_filter+2)
+    # print(mel_fs)
+    # 转换成频率
+    mel_hz = (10**(mel_fs/2595)-1)*700
+    # print(mel_hz)
+    # 转换成滤波组
+    # 对fft的大小进行缩放
+    fft_bin = np.floor(mel_hz/upper_hz*spectrum.shape[1])
+    # print(fft_bin)
+    for i in range(0, num_filter):
+        low = fft_bin[i-1]
+        mid = fft_bin[i]
+        upper = fft_bin[i+1]
+        for j in range(int(low), int(mid)):
+            mel[i][j] = (j - low) / (mid - low)
+        for j in range(int(mid), int(upper)):
+            mel[i][j] = (upper - j) / (upper - mid)
 
-    feats=np.zeros(spectrum.shape[0], num_filter))
-    """
-        FINISH by YOURSELF
-    """
+    #     plt.plot([n for n in range(mel[i].size)], mel[i])
+    # plt.show()
+
+    # 点积，得到23组滤波器的能量
+    # feats.shape = [spectrum.shape[0], num_filter]
+    feats = np.dot(spectrum, mel.T)
+    feats = np.log10(feats)
     return feats
 
 def mfcc(fbank, num_mfcc = num_mfcc):
@@ -95,11 +133,27 @@ def mfcc(fbank, num_mfcc = num_mfcc):
         :returns: mfcc feature, a num_frames by num_mfcc array 
     """
 
-    feats = np.zeros((fbank.shape[0],num_mfcc))
+    r"""
+    .. math::
+        y_k =  f\sum_{n=0}^{N-1} x_n \cos\left(\frac{\pi k(2n+1)}{2N} \right)
+        f = \begin{cases}
+           \sqrt{\frac{1}{}} & \text{if }k=0, \\
+           \sqrt{\frac{2}{N}} & \text{otherwise} \end{cases}
+       
     """
-        FINISH by YOURSELF
-    """
-    return feats
+
+    feats = np.zeros(fbank.shape)
+    n = fbank.shape[1]
+    for i in range(feats.shape[0]):
+        for j in range(feats.shape[1]):
+            for k in range(fbank.shape[1]):
+                feats[i][j] += fbank[i][k]*np.cos(np.pi*j*(2*k+1)/(2*n))
+
+        feats[i][0] *= np.sqrt(1/n)
+        feats[i][1:] = feats[i][1:] * np.sqrt(2/n)
+
+    return feats[:, 1:num_mfcc+1]
+
 
 def write_file(feats, file_name):
     """Write the feature to file
@@ -116,16 +170,33 @@ def write_file(feats, file_name):
     f.close()
 
 
+
+
+
 def main():
-    wav, fs = librosa.load('./test.wav', sr=None)
-    signal = preemphasis(wav)
+    wav = AudioSegment.from_wav('./test.wav')
+    sound = wav.get_array_of_samples()
+    arr = np.array(sound).astype(np.float32)
+    m = np.max(arr)
+    arr /= m
+    # win = np.hamming(frame_len)
+    # plot_show(win)
+    # 预加重
+    signal = preemphasis(arr)
     frames = enframe(signal)
     spectrum = get_spectrum(frames)
+    # 语谱图要取对数
+    # d = 10*np.log10((np.abs(spectrum.T)*np.abs(spectrum.T)))
+    # plot_spectrogram(d,"spectrum","111")
+    # 用函数直接画语谱图
+    # plt.specgram(arr, NFFT=256, Fs=fs, window=np.hanning(256))
+    # plt.show()
+
     fbank_feats = fbank(spectrum)
-    mfcc_feats = mfcc(fbank_feats)
-    # plot_spectrogram(fbank_feats, 'Filter Bank','fbank.png')
+    plot_spectrogram(fbank_feats.T, 'Filter Bank', 'fbank.png')
     write_file(fbank_feats,'./test.fbank')
-    # plot_spectrogram(mfcc_feats.T, 'MFCC','mfcc.png')
+    mfcc_feats = mfcc(fbank_feats)
+    plot_spectrogram(mfcc_feats.T, 'MFCC','mfcc.png')
     write_file(mfcc_feats,'./test.mfcc')
 
 if __name__ == '__main__':
